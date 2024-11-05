@@ -393,19 +393,6 @@ class DockerInsights:
                             recommended_patch_upgrade = upgrade
                             recommended_patch_risk_card = list(severity_scores.values())[:5]
 
-        # Write all upgrade details to CSV
-        csv_file_path = '/Users/athiran/Documents/dockerUpgrade/available_upgrades_shopizer.csv'
-        with open(csv_file_path, mode='w', newline='') as file:
-            writer = csv.writer(file)
-            # Write header
-            writer.writerow(['Image Name', 'Upgrade Tag', 'Severity Score', 'Total Vulnerabilities', 'Severity Breakdown'])
-            
-            # Write all upgrade details
-            for upgrade_detail in all_upgrade_details:
-                writer.writerow(upgrade_detail)
-
-        print(f"Details saved to {csv_file_path}")
-
         upgrade_final = []
         # Output the recommended upgrades
         if recommended_major_upgrade:
@@ -443,19 +430,6 @@ class DockerInsights:
                     ])
         else:
             print("No suitable patch upgrades found.")
-
-        # Write all upgrade details to CSV
-        csv_file_path = '/Users/athiran/Documents/dockerUpgrade/recommended_upgrade_shopizer.csv'
-        with open(csv_file_path, mode='w', newline='') as file:
-            writer = csv.writer(file)
-            # Write header
-            writer.writerow(['Image Name', 'Upgrade Tag', 'Severity Score', 'Total Vulnerabilities', 'Type'])
-            
-            # Write all upgrade details
-            for up in upgrade_final:
-                writer.writerow(up)
-
-        print(f"Details saved to {csv_file_path}")
 
         current_severity_score = current_total_severity_score
         recommended_severity_scores = {
