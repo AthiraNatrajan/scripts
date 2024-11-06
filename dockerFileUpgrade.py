@@ -2,7 +2,6 @@ import re
 import requests
 import json
 import argparse
-import csv
 
 DOCKER_HUB_BASE_URL = "https://hub.docker.com/v2/repositories/library"
 
@@ -269,6 +268,51 @@ class DockerInsights:
         patch = int(parts[2]) if len(parts) > 2 else 0
         return major, minor, patch
     
+    def calculate_confidence_factor(self, current_risk_card, upgrade_risk_card):
+        # Calculate total current risk
+        total_current_risk = sum(current_risk_card)
+        
+        # Calculate total risk reduction
+        total_risk_reduction = sum(max(current - upgrade, 0) for current, upgrade in zip(current_risk_card, upgrade_risk_card))
+        
+        # Calculate confidence factor
+        if total_current_risk > 0:
+            confidence_factor = (total_risk_reduction / total_current_risk) * 100
+        else:
+            confidence_factor = 0  # If there is no current risk, confidence is 0%
+
+        return confidence_factor
+
+    def classify_confidence(self, confidence_factor):
+        if confidence_factor >= 75:
+            return "High"
+        elif confidence_factor >= 40:
+            return "Medium"
+        else:
+            return "Low"
+        
+    def get_best_confidence_classification(self, classifications):
+        # Define a mapping of classification to its ranking value
+        classification_ranking = {
+            "High": 3,
+            "Medium": 2,
+            "Low": 1
+        }
+        
+        best_classification_value = 0
+        best_classification = None
+        
+        # Loop through the classifications
+        for classification in classifications:
+            current_classification_value = classification_ranking.get(classification, 0)
+            
+            # Check if this classification is better than the best found so far
+            if current_classification_value > best_classification_value:
+                best_classification_value = current_classification_value
+                best_classification = classification
+
+        return best_classification
+    
     def recommended_upgrades(self):
         """Iterate over available upgrades and get vulnerability reports to recommend the best upgrade."""
         if self.image_name is None or self.image_tag is None:
@@ -431,83 +475,92 @@ class DockerInsights:
         else:
             print("No suitable patch upgrades found.")
 
-        current_severity_score = current_total_severity_score
-        recommended_severity_scores = {
-            "major": best_major_severity_score,
-            "minor": best_minor_severity_score,
-            "patch": best_patch_severity_score,
-        }
-        
-        # Calculate how much severity has been reduced
-        savings_risk = {}
-        for key, value in recommended_severity_scores.items():
-            if value is not None:
-                reduction = (current_severity_score - value) / current_severity_score * 100
-                savings_risk[key] = reduction if reduction > 0 else 0
-            else:
-                savings_risk[key] = 0  # No upgrade, no savings
+        final_output = {}
+        if (recommended_major_upgrade or recommended_minor_upgrade or recommended_patch_upgrade):
+            current_severity_score = current_total_severity_score
+            recommended_severity_scores = {
+                "major": best_major_severity_score,
+                "minor": best_minor_severity_score,
+                "patch": best_patch_severity_score,
+            }
+            
+            # Calculate how much severity has been reduced
+            savings_risk = {}
+            for key, value in recommended_severity_scores.items():
+                if value is not None:
+                    reduction = (current_severity_score - value) / current_severity_score * 100
+                    savings_risk[key] = reduction if reduction > 0 else 0
+                else:
+                    savings_risk[key] = 0  # No upgrade, no savings
 
-        # Prepare the final JSON structure
-        pull_requests = []
-        i = 0
-        if recommended_major_upgrade:
-            i += 1
-            pull_requests.append({
-                "name": f"PR{i}",
-                "risk_card": [recommended_major_risk_card[j] - current_risk_card[j] for j in range(len(recommended_major_risk_card))],  # You might want to adjust this
-                "changes": [{
-                    "package": self.image_name,  # You may want to specify the actual package if available
-                    "current_version": self.image_tag,
-                    "upgrade_version": recommended_major_upgrade,
-                    "risk_card_current": current_risk_card,  # Adjust as necessary
-                    "risk_card_upgrade": recommended_major_risk_card
-                }]
-            })
-        
-        if recommended_minor_upgrade:
-            i += 1
-            pull_requests.append({
-                "name": f"PR{i}",
-                "risk_card": [recommended_minor_risk_card[j] - current_risk_card[j] for j in range(len(recommended_minor_risk_card))],
-                "changes": [{
-                    "package": self.image_name,
-                    "current_version": self.image_tag,
-                    "upgrade_version": recommended_minor_upgrade,
-                    "risk_card_current": current_risk_card,
-                    "risk_card_upgrade": recommended_minor_risk_card
-                }]
-            })
-        
-        if recommended_patch_upgrade:
-            i += 1
-            pull_requests.append({
-                "name": f"PR{i}",
-                "risk_card": [recommended_patch_risk_card[j] - current_risk_card[j] for j in range(len(recommended_patch_risk_card))],
-                "changes": [{
-                    "package": self.image_name,
-                    "current_version": self.image_tag,
-                    "upgrade_version": recommended_patch_upgrade,
-                    "risk_card_current": current_risk_card,
-                    "risk_card_upgrade": recommended_patch_risk_card
-                }]
-            })
+            confident_factor_major = self.calculate_confidence_factor(current_risk_card, recommended_major_risk_card)
+            confident_factor_minor = self.calculate_confidence_factor(current_risk_card, recommended_minor_risk_card)
+            confident_factor_patch = self.calculate_confidence_factor(current_risk_card, recommended_patch_risk_card)
+            confident_factor = [self.classify_confidence(confident_factor_major), self.classify_confidence(confident_factor_minor), self.classify_confidence(confident_factor_patch)]
+ 
+            # Prepare the final JSON structure
+            pull_requests = []
+            i = 0
+            if recommended_major_upgrade:
+                i += 1
+                pull_requests.append({
+                    "name": f"PR{i}",
+                    "risk_card": [recommended_major_risk_card[j] - current_risk_card[j] for j in range(len(recommended_major_risk_card))],  # You might want to adjust this
+                    "changes": [{
+                        "package": self.image_name,  # You may want to specify the actual package if available
+                        "current_version": self.image_tag,
+                        "upgrade_version": recommended_major_upgrade,
+                        "risk_card_current": current_risk_card,  # Adjust as necessary
+                        "risk_card_upgrade": recommended_major_risk_card,
+                        "Savings (risk)": f"reduce risk by {savings_risk['major']}%",
+                        "Confidence Factor" : self.classify_confidence(confident_factor_major)
+                    }]
+                })
+            
+            if recommended_minor_upgrade:
+                i += 1
+                pull_requests.append({
+                    "name": f"PR{i}",
+                    "risk_card": [recommended_minor_risk_card[j] - current_risk_card[j] for j in range(len(recommended_minor_risk_card))],
+                    "changes": [{
+                        "package": self.image_name,
+                        "current_version": self.image_tag,
+                        "upgrade_version": recommended_minor_upgrade,
+                        "risk_card_current": current_risk_card,
+                        "risk_card_upgrade": recommended_minor_risk_card,
+                        "Savings (risk)": f"reduce risk by {savings_risk['minor']}%",
+                        "Confidence Factor" : self.classify_confidence(confident_factor_minor)
+                    }]
+                })
+            
+            if recommended_patch_upgrade:
+                i += 1
+                pull_requests.append({
+                    "name": f"PR{i}",
+                    "risk_card": [recommended_patch_risk_card[j] - current_risk_card[j] for j in range(len(recommended_patch_risk_card))],
+                    "changes": [{
+                        "package": self.image_name,
+                        "current_version": self.image_tag,
+                        "upgrade_version": recommended_patch_upgrade,
+                        "risk_card_current": current_risk_card,
+                        "risk_card_upgrade": recommended_patch_risk_card,
+                        "Savings (risk)": f"reduce risk by {savings_risk['patch']}%",
+                        "Confidence Factor" : self.classify_confidence(confident_factor_patch)
+                    }]
+                })
 
-        summary = {
-            "Number of PRs": len(pull_requests),
-            "Confident_Factor": "High",
-            "Savings (risk)": {
-                "major": f"reduce risk by {savings_risk['major']:.2f}%",
-                "minor": f"reduce risk by {savings_risk['minor']:.2f}%",
-                "patch": f"reduce risk by {savings_risk['patch']:.2f}%"
-            },
-            "risk_card": current_risk_card
-        }
+            summary = {
+                "Number of PRs": len(pull_requests),
+                "Confident_Factor": self.get_best_confidence_classification(confident_factor),
+                "Savings (risk)": max(list(savings_risk.values())),
+                "risk_card": current_risk_card
+            }
 
-        # Combine the summary and pull requests into the final JSON
-        final_output = {
-            "summary": summary,
-            "pull_requests": pull_requests
-        }
+            # Combine the summary and pull requests into the final JSON
+            final_output = {
+                "summary": summary,
+                "pull_requests": pull_requests
+            }
 
         # Save the final JSON to a file
         json_file_path = '/Users/athiran/Documents/dockerUpgrade/recommended_upgrades_summary.json'
@@ -533,11 +586,6 @@ if __name__ == "__main__":
 
     print("Image Name:", image_name)
     print("Image Tag:", image_tag)
-
-    #docker_insights.get_vulnerabilities(image_name, image_tag)
-
-    #available_upgrade = docker_insights.get_available_upgrades()
-    #print("Available upgrades: %s" % available_upgrade)
 
     recommended_upgrade = docker_insights.recommended_upgrades()
     print("Best Recommended Upgrade:", recommended_upgrade)
